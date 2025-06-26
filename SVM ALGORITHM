@@ -1,0 +1,11 @@
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
+
+svm_model = SVC(kernel='linear', probability=True)
+svm_model.fit(X_train, y_train)
+svm_preds = svm_model.predict(X_test)
+svm_acc = accuracy_score(y_test, svm_preds)
+
+# Save model
+joblib.dump(svm_model, 'svm_model.pkl')
+print("SVM Accuracy:", svm_acc)
