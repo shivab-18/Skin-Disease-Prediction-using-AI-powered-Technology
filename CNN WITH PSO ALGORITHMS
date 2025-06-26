@@ -1,0 +1,126 @@
+import os
+import cv2
+import numpy as np
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense
+from tensorflow.keras.models import load_model
+
+# ---------------- Load and preprocess dataset ---------------- #
+def load_images(folder, image_size=(100, 100)):
+    X, y = [], []
+    class_names = sorted(os.listdir(folder))
+    class_map = {cls: i for i, cls in enumerate(class_names)}
+
+    for cls in class_names:
+        cls_path = os.path.join(folder, cls)
+        for img_name in os.listdir(cls_path):
+            img_path = os.path.join(cls_path, img_name)
+            img = cv2.imread(img_path)
+            if img is not None:
+                img = cv2.resize(img, image_size)
+                X.append(img)
+                y.append(class_map[cls])
+
+    return np.array(X), np.array(y), class_map
+
+dataset_path = r'C:\\Users\\shiva\\Downloads\\project\\train_set'  # <-- Update as needed
+X, y, class_map = load_images(dataset_path)
+X = X.astype('float32') / 255.0
+y_cat = to_categorical(y)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y_cat, test_size=0.2, random_state=42)
+
+# ---------------- PSO for CNN optimization ---------------- #
+class CustomPSO:
+    def __init__(self, fitness_func, pop_size=5, dim=2, lb=None, ub=None, w=0.5, c1=1.5, c2=1.5, epoch=10):
+        self.fitness_func = fitness_func
+        self.pop_size = pop_size
+        self.dim = dim
+        self.lb = np.array(lb)
+        self.ub = np.array(ub)
+        self.w = w
+        self.c1 = c1
+        self.c2 = c2
+        self.epoch = epoch
+
+    def solve(self):
+        pos = np.random.uniform(self.lb, self.ub, (self.pop_size, self.dim))
+        vel = np.zeros_like(pos)
+        fitness = np.array([self.fitness_func(ind) for ind in pos])
+        pbest = pos.copy()
+        pbest_fitness = fitness.copy()
+        gbest_idx = np.argmin(fitness)
+        gbest = pos[gbest_idx].copy()
+        gbest_fit = fitness[gbest_idx]
+
+        for ep in range(self.epoch):
+            for i in range(self.pop_size):
+                r1, r2 = np.random.rand(), np.random.rand()
+                vel[i] = self.w * vel[i] + self.c1 * r1 * (pbest[i] - pos[i]) + self.c2 * r2 * (gbest - pos[i])
+                pos[i] = np.clip(pos[i] + vel[i], self.lb, self.ub)
+                fit = self.fitness_func(pos[i])
+
+                if fit < pbest_fitness[i]:
+                    pbest[i] = pos[i]
+                    pbest_fitness[i] = fit
+                    if fit < gbest_fit:
+                        gbest = pos[i]
+                        gbest_fit = fit
+
+            print(f"Epoch {ep+1}/{self.epoch}, Best Accuracy: {-gbest_fit:.4f}")
+
+        return gbest, gbest_fit
+
+# ---------------- Fitness function for CNN ---------------- #
+def cnn_fitness(params):
+    filters = int(params[0])
+    dense_units = int(params[1])
+
+    try:
+        model = Sequential([
+            Conv2D(filters, (3, 3), activation='relu', input_shape=(100, 100, 3)),
+            MaxPooling2D((2, 2)),
+            Flatten(),
+            Dense(dense_units, activation='relu'),
+            Dense(len(class_map), activation='softmax')
+        ])
+        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        model.fit(X_train, y_train, epochs=3, batch_size=32, verbose=0)
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        return -acc  # PSO minimizes, so we use negative accuracy
+    except Exception as e:
+        print(f"⚠️ Invalid config ({filters}, {dense_units}): {e}")
+        return 1.0  # Penalize invalid configs
+
+# ---------------- Run PSO ---------------- #
+pso = CustomPSO(
+    fitness_func=cnn_fitness,
+    pop_size=5,
+    dim=2,
+    lb=[16, 32],
+    ub=[128, 256],
+    epoch=5
+)
+best_pos, best_fit = pso.solve()
+
+# ---------------- Final CNN model with best params ---------------- #
+final_filters = int(best_pos[0])
+final_dense = int(best_pos[1])
+final_model = Sequential([
+    Conv2D(final_filters, (3, 3), activation='relu', input_shape=(100, 100, 3)),
+    MaxPooling2D((2, 2)),
+    Flatten(),
+    Dense(final_dense, activation='relu'),
+    Dense(len(class_map), activation='softmax')
+])
+final_model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+final_model.fit(X_train, y_train, epochs=10, batch_size=32, verbose=1)
+final_acc = final_model.evaluate(X_test, y_test)[1]
+
+# ---------------- Save model ---------------- #
+model_save_path = "final_cnn_pso_model.h5"
+final_model.save(model_save_path)
+print(f"✅ Final CNN Accuracy after PSO: {final_acc:.4f}")
+print(f"📁 Model saved to: {model_save_path}")
